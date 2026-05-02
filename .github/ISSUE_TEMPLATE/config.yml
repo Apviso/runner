@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private APVISO support
+    url: https://apviso.com/support
+    about: Account, billing, credentials, private targets, and customer-specific support.
+  - name: Security report
+    url: mailto:security@apviso.com
+    about: Report vulnerabilities privately. Do not open public security issues.

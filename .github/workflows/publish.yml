@@ -1,0 +1,160 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version in package.json"
+        required: true
+        type: string
+      dist_tag:
+        description: "npm dist-tag"
+        required: true
+        default: beta
+        type: choice
+        options:
+          - beta
+          - latest
+      publish_npm:
+        description: "Publish @apviso/runner to npm"
+        required: true
+        default: true
+        type: boolean
+      publish_docker:
+        description: "Publish ghcr.io/apviso/runner"
+        required: true
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  IMAGE_NAME: ghcr.io/apviso/runner
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Resolve release inputs
+        id: release
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            dist_tag="${{ inputs.dist_tag }}"
+          else
+            ref="${GITHUB_REF_NAME#v}"
+            if [[ "$ref" == *-beta ]]; then
+              version="${ref%-beta}"
+              dist_tag="beta"
+            else
+              version="$ref"
+              dist_tag="latest"
+            fi
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dist_tag=$dist_tag" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "docker_tags<<EOF"
+            echo "${IMAGE_NAME}:${version}"
+            if [ "$dist_tag" = "latest" ]; then
+              echo "${IMAGE_NAME}:latest"
+            else
+              echo "${IMAGE_NAME}:${dist_tag}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install runtime dependencies
+        run: npm install --omit=dev --ignore-scripts
+
+      - name: Verify package payload
+        run: |
+          node -e 'const fs = require("fs"); const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); if (pkg.version !== process.env.VERSION) throw new Error(`package.json ${pkg.version} !== ${process.env.VERSION}`);'
+          test "$(node dist/cli.js version)" = "$VERSION"
+          test "$(node -e 'const pkg = require("./package.json"); console.log(pkg.repository.url)')" = "git+https://github.com/apviso/runner.git"
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+
+      - name: Pack npm tarball
+        id: pack
+        run: |
+          mkdir -p .release
+          npm pack --pack-destination .release
+          tarball="$(ls .release/*.tgz | head -n 1)"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Publish npm package
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_npm }}
+        run: npm publish "${{ steps.pack.outputs.tarball }}" --access public --tag "${{ steps.release.outputs.dist_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Setup QEMU
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_docker }}
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Docker Buildx
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_docker }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_docker }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_docker }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.release.outputs.docker_tags }}
+          provenance: true
+          sbom: true
+
+      - name: Create GitHub release
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          notes="Published @apviso/runner ${VERSION} with npm dist-tag ${DIST_TAG}."
+          latest_flag="--latest=false"
+          if [ "$DIST_TAG" = "latest" ]; then
+            latest_flag="--latest=true"
+          fi
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$TARBALL" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$TARBALL" \
+              --title "APVISO Runner ${VERSION}" \
+              --notes "$notes" \
+              $latest_flag
+          fi

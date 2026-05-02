@@ -1,0 +1,104 @@
+export class ApiError extends Error {
+    status;
+    constructor(message, status) {
+        super(message);
+        this.status = status;
+    }
+}
+export class RunnerApi {
+    config;
+    constructor(config) {
+        this.config = config;
+    }
+    async request(path, init = {}, auth = { runnerToken: this.config.token ?? null }) {
+        const headers = {
+            "Content-Type": "application/json",
+            ...(init.headers ?? {}),
+        };
+        if (auth.runnerToken)
+            headers.Authorization = `Bearer ${auth.runnerToken}`;
+        if (auth.apiKey)
+            headers["X-API-Key"] = auth.apiKey;
+        const res = await fetch(`${this.config.apiUrl}${path}`, {
+            ...init,
+            headers,
+        });
+        if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            let message = text || `Request failed: ${res.status}`;
+            try {
+                const parsed = JSON.parse(text);
+                message = String(parsed.error || parsed.message || message);
+            }
+            catch { }
+            throw new ApiError(message, res.status);
+        }
+        if (res.status === 204)
+            return undefined;
+        return await res.json();
+    }
+    apiKeyRequest(path, init = {}) {
+        if (!this.config.apiKey)
+            throw new Error("APVISO_API_KEY is required. Run `apviso onboard` first.");
+        return this.request(path, init, { apiKey: this.config.apiKey });
+    }
+    register(body) {
+        return this.request("/api/runner/register", {
+            method: "POST",
+            body: JSON.stringify(body),
+        }, { runnerToken: null });
+    }
+    heartbeat(body, signal) {
+        return this.request("/api/runner/heartbeat", {
+            method: "POST",
+            body: JSON.stringify(body),
+            signal,
+        });
+    }
+    claim(signal) {
+        return this.request("/api/runner/jobs/claim", { method: "POST", signal });
+    }
+    renewLease(jobId) {
+        return this.request(`/api/runner/jobs/${jobId}/lease`, { method: "POST" });
+    }
+    preflight(jobId, result) {
+        return this.request(`/api/runner/jobs/${jobId}/preflight`, {
+            method: "POST",
+            body: JSON.stringify(result),
+        });
+    }
+    start(jobId, runtimeMetadata) {
+        return this.request(`/api/runner/jobs/${jobId}/start`, {
+            method: "POST",
+            body: JSON.stringify({ runtimeMetadata }),
+        });
+    }
+    finish(jobId, body) {
+        return this.request(`/api/runner/jobs/${jobId}/finish`, {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+    }
+    createEnrollmentToken(name) {
+        return this.apiKeyRequest("/api/v1/runners/enrollment-tokens", {
+            method: "POST",
+            body: JSON.stringify({ ...(name ? { name } : {}) }),
+        });
+    }
+    listRunners() {
+        return this.apiKeyRequest("/api/v1/runners");
+    }
+    runnerReadiness(targetId) {
+        const query = targetId ? `?targetId=${encodeURIComponent(targetId)}` : "";
+        return this.apiKeyRequest(`/api/v1/runners/readiness${query}`);
+    }
+    createTarget(body) {
+        return this.apiKeyRequest("/api/v1/targets", {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+    }
+    scanCallbackUrl(job) {
+        return `${this.config.apiUrl}${job.platform.callbackBasePath}`;
+    }
+}

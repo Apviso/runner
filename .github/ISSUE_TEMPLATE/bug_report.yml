@@ -1,0 +1,80 @@
+name: Bug report
+description: Report a reproducible APVISO Runner bug.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not include APVISO tokens, model-provider keys, cookies, target credentials, or private target URLs.
+  - type: input
+    id: runner-version
+    attributes:
+      label: Runner version
+      description: Output from `apviso version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - npm global install
+        - npx
+        - Docker image
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04, macOS 15, Debian 13"
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Output from `node --version`, if using npm/npx.
+      placeholder: "v22.19.0"
+  - type: input
+    id: docker-version
+    attributes:
+      label: Docker version
+      description: Output from `docker version --format '{{.Server.Version}}'`.
+      placeholder: "29.1.3"
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The command you ran.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Redacted doctor output
+      description: Output from `apviso doctor`, with all secrets and private URLs removed.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      description: Include only logs with tokens, API keys, cookies, credentials, and private URLs removed.
+      render: text
