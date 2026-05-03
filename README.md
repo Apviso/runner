@@ -92,6 +92,8 @@ services:
       APVISO_RUNNER_NAME: "prod-runner-1"
       APVISO_RUNNER_WORKSPACE: "/var/lib/apviso-runner"
       APVISO_TARGET_AUTH_CONFIG_FILE: "/etc/apviso/target-auth.json"
+      APVISO_REQUIRE_IMAGE_SIGNATURE: "true"
+      APVISO_ALLOW_UNSIGNED_DEV_IMAGES: "false"
       APVISO_MODEL_PROVIDER: "anthropic"
       APVISO_EMBEDDING_PROVIDER: "local"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
@@ -114,11 +116,17 @@ APVISO_RUNNER_HEARTBEAT_INTERVAL_MS=15000
 APVISO_MODEL_PROVIDER=anthropic
 APVISO_EMBEDDING_PROVIDER=local
 APVISO_TARGET_AUTH_CONFIG_FILE=/etc/apviso/target-auth.json
+APVISO_REQUIRE_IMAGE_SIGNATURE=true
+APVISO_ALLOW_UNSIGNED_DEV_IMAGES=false
 ```
 
 Supported model providers: `anthropic`, `claude-code`, `openai`,
 `openai-codex`, `github-copilot`, `cloudflare-ai-gateway`, and `bedrock`.
 Supported embedding providers: `local` and `bedrock-cohere`.
+
+Production runners should leave `APVISO_REQUIRE_IMAGE_SIGNATURE=true` and
+`APVISO_ALLOW_UNSIGNED_DEV_IMAGES=false`. Use unsigned images only for local
+development.
 
 ## Local Target Auth
 
@@ -126,17 +134,31 @@ Target application credentials are local to the runner host. Put bearer tokens,
 cookies, basic auth, API keys, custom headers, or login credentials in a JSON
 file and point `APVISO_TARGET_AUTH_CONFIG_FILE` at it.
 
+A target can use one auth object or an array when scans should try multiple
+authenticated contexts for the same target.
+
 ```json
 {
   "targets": {
-    "staging.example.com": {
-      "type": "cookie",
-      "cookieName": "session",
-      "cookieValue": "local-only-cookie"
-    }
+    "staging.example.com": [
+      {
+        "type": "cookie",
+        "cookieName": "session",
+        "cookieValue": "local-only-cookie"
+      },
+      {
+        "type": "basic",
+        "username": "reviewer",
+        "password": "local-only-password"
+      }
+    ]
   }
 }
 ```
+
+Use `apviso add target-auth <target-id-or-url>` to append local auth entries for
+an existing target. Repeat `--auth-type` or use `--auth-types bearer,basic` for
+multiple auth entries.
 
 Do not include APVISO tokens, model-provider keys, target credentials, or other
 secrets in public issues.

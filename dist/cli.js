@@ -30,16 +30,16 @@ export function parseCliArgs(argv) {
         const [rawKey, inlineValue] = withoutPrefix.split(/=(.*)/s, 2);
         const key = rawKey;
         if (inlineValue !== undefined) {
-            flags[key] = inlineValue;
+            setFlag(flags, key, inlineValue);
             continue;
         }
         const next = args[index + 1];
         if (next && !next.startsWith("--")) {
-            flags[key] = next;
+            setFlag(flags, key, next);
             index += 1;
         }
         else {
-            flags[key] = true;
+            setFlag(flags, key, true);
         }
     }
     return {
@@ -60,6 +60,7 @@ Commands:
   run                      Start polling for APVISO scan jobs
   doctor [--json]          Run local and cloud readiness checks
   add target [target]       Create a target and optional runner-local auth
+  add target-auth [target]  Add runner-local auth for an existing target ID, domain, or URL
   register --token <enrollment-token|runner-token> [--name local-runner]
                             Register with an enrollment token or store a rotated runner token
   unregister                Show cleanup guidance for this runner
@@ -68,15 +69,53 @@ Commands:
 
 Environment:
   APVISO_API_URL, APVISO_API_KEY, APVISO_RUNNER_TOKEN, APVISO_MODEL_PROVIDER,
-  APVISO_EMBEDDING_PROVIDER, ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN/OPENAI_API_KEY/OPENAI_CODEX_OAUTH_TOKEN/COPILOT_GITHUB_TOKEN/CLOUDFLARE_API_KEY/AWS_*
+  APVISO_EMBEDDING_PROVIDER, APVISO_REQUIRE_IMAGE_SIGNATURE,
+  APVISO_ALLOW_UNSIGNED_DEV_IMAGES, APVISO_TARGET_AUTH_CONFIG_FILE,
+  ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN/OPENAI_API_KEY/OPENAI_CODEX_OAUTH_TOKEN/COPILOT_GITHUB_TOKEN/CLOUDFLARE_API_KEY/AWS_*
 `;
+}
+function setFlag(flags, key, value) {
+    const current = flags[key];
+    if (current === undefined) {
+        flags[key] = value;
+        return;
+    }
+    const nextValue = value === true ? "true" : value;
+    flags[key] = Array.isArray(current)
+        ? [...current, nextValue]
+        : [current === true ? "true" : current, nextValue];
 }
 function flag(flags, name) {
     const value = flags[name];
+    if (Array.isArray(value))
+        return value.at(-1);
     return typeof value === "string" ? value : undefined;
 }
+function flagValues(flags, name) {
+    const value = flags[name];
+    if (Array.isArray(value))
+        return value;
+    return typeof value === "string" ? [value] : [];
+}
+function flagList(flags, ...names) {
+    return names
+        .flatMap((name) => flagValues(flags, name))
+        .flatMap((value) => value.split(","))
+        .map((value) => value.trim())
+        .filter(Boolean);
+}
 function flagBool(flags, name) {
+    const value = flags[name];
+    if (Array.isArray(value))
+        return value.includes("true");
     return flags[name] === true || flags[name] === "true";
+}
+function authTypesFromFlags(flags) {
+    return flagList(flags, "auth-type", "auth-types").map((value) => {
+        if (AUTH_TYPES.includes(value))
+            return value;
+        throw new Error(`--auth-type must be one of: ${AUTH_TYPES.join(", ")}`);
+    });
 }
 function normalizeDomain(input) {
     const value = input.trim();
@@ -383,21 +422,46 @@ async function promptTargetAuth(prompter, forcedType) {
     }
     throw new Error(`Unsupported auth type: ${type}`);
 }
-async function maybeSaveTargetAuth(prompter, config, target, forcedAuthType) {
-    const shouldConfigure = forcedAuthType
-        ? forcedAuthType !== "none"
-        : await promptYesNo(prompter, "Configure runner-local auth for this target?", false);
+async function promptTargetAuths(prompter, forcedTypes = []) {
+    if (forcedTypes.length > 0) {
+        const auths = [];
+        for (const type of forcedTypes) {
+            const auth = await promptTargetAuth(prompter, type);
+            if (auth)
+                auths.push(auth);
+        }
+        return auths;
+    }
+    const first = await promptTargetAuth(prompter);
+    if (!first)
+        return [];
+    const auths = [first];
+    while (await promptYesNo(prompter, "Add another auth for this target?", false)) {
+        const next = await promptTargetAuth(prompter);
+        if (!next)
+            break;
+        auths.push(next);
+    }
+    return auths;
+}
+async function maybeSaveTargetAuth(prompter, config, target, forcedAuthTypes = [], options = {}) {
+    const shouldConfigure = forcedAuthTypes.length > 0
+        ? forcedAuthTypes.some((type) => type !== "none")
+        : options.promptToConfigure === false
+            ? true
+            : await promptYesNo(prompter, "Configure runner-local auth for this target?", false);
     if (!shouldConfigure)
         return;
-    const auth = await promptTargetAuth(prompter, forcedAuthType);
-    if (!auth)
+    const auths = await promptTargetAuths(prompter, forcedAuthTypes);
+    if (auths.length === 0)
         return;
-    const filePath = config.targetAuthConfigFile ||
+    const filePath = options.authFilePath ||
+        config.targetAuthConfigFile ||
         await promptRequired(prompter, "Target auth config file", defaultTargetAuthPath());
-    upsertTargetAuthConfig(filePath, target, auth);
+    upsertTargetAuthConfig(filePath, target, auths, { mode: options.mode ?? "append" });
     if (!config.targetAuthConfigFile)
         saveConfig({ targetAuthConfigFile: expandHome(filePath) });
-    ui.success(`Updated runner-local auth config at ${expandHome(filePath)}.`);
+    ui.success(`Updated runner-local auth config at ${expandHome(filePath)} with ${auths.length} auth entr${auths.length === 1 ? "y" : "ies"}.`);
 }
 async function commandAddTarget(parsed, prompter = createPrompter()) {
     try {
@@ -422,7 +486,37 @@ async function commandAddTarget(parsed, prompter = createPrompter()) {
             visibility,
         }), (created) => `Created target ${created.target.domain}`);
         ui.info(`Target ID: ${result.target.id}`);
-        await maybeSaveTargetAuth(prompter, config, result.target, flag(parsed.flags, "auth-type"));
+        await maybeSaveTargetAuth(prompter, config, result.target, authTypesFromFlags(parsed.flags), {
+            authFilePath: flag(parsed.flags, "target-auth-file"),
+        });
+        return 0;
+    }
+    finally {
+        prompter.close?.();
+    }
+}
+export async function commandAddTargetAuth(parsed, prompter = createPrompter()) {
+    try {
+        const config = loadConfig();
+        const rawTarget = flag(parsed.flags, "target") ||
+            parsed.positionals[0] ||
+            await promptRequired(prompter, "Target ID, domain, or URL");
+        const targetId = flag(parsed.flags, "target-id") || rawTarget;
+        const domain = flag(parsed.flags, "domain") || normalizeDomain(rawTarget);
+        const displayUrl = flag(parsed.flags, "display-url") ||
+            (rawTarget.includes("://") ? rawTarget : domain || rawTarget);
+        const scanUrl = flag(parsed.flags, "scan-url") ||
+            await promptString(prompter, "Runtime scan URL (blank to omit)");
+        await maybeSaveTargetAuth(prompter, config, {
+            id: targetId,
+            domain: domain || normalizeDomain(displayUrl) || targetId,
+            displayUrl,
+            scanUrl: scanUrl || undefined,
+        }, authTypesFromFlags(parsed.flags), {
+            authFilePath: flag(parsed.flags, "target-auth-file"),
+            promptToConfigure: false,
+            mode: "append",
+        });
         return 0;
     }
     finally {
@@ -450,6 +544,8 @@ export async function runCli(argv = process.argv.slice(2)) {
         return commandRun();
     if (parsed.command === "add" && parsed.subcommand === "target")
         return commandAddTarget(parsed);
+    if (parsed.command === "add" && parsed.subcommand === "target-auth")
+        return commandAddTargetAuth(parsed);
     if (parsed.command === "unregister")
         return commandUnregister();
     if (parsed.command === "logs")
