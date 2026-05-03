@@ -2,6 +2,8 @@ import { lookup } from "node:dns/promises";
 import { accessSync, constants } from "node:fs";
 import { runCommand } from "./process.js";
 import { hasAnthropicCredential, hasBedrockCredentials, hasClaudeCodeToken, hasCloudflareAiGatewayCredentials, hasGitHubCopilotToken, hasOpenAIApiKey, hasOpenAICodexToken, missingCloudflareAiGatewayEnv, } from "./providers.js";
+export const DOCKER_INSTALL_URL = "https://docs.docker.com/engine/install/";
+const DOCKER_REMEDIATION = `Install Docker Engine or Docker Desktop (${DOCKER_INSTALL_URL}), or make Docker socket access available to the runner.`;
 function check(ok, message, remediation) {
     return { ok, message, ...(remediation ? { remediation } : {}) };
 }
@@ -43,7 +45,7 @@ export async function runPreflight(config, job) {
     const checks = {};
     const docker = await runCommand("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 8_000 })
         .catch((err) => ({ code: 1, stdout: "", stderr: err instanceof Error ? err.message : String(err) }));
-    checks.container_engine = check(docker.code === 0, docker.code === 0 ? `Docker ${docker.stdout.trim()}` : "Docker is unavailable", docker.code === 0 ? undefined : "Install Docker or set runner container engine access.");
+    checks.container_engine = check(docker.code === 0, docker.code === 0 ? `Docker ${docker.stdout.trim()}` : "Docker is unavailable", docker.code === 0 ? undefined : DOCKER_REMEDIATION);
     const provider = providerPreflight(config);
     checks.provider = provider;
     if (config.embeddingProvider === "bedrock-cohere") {

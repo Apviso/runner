@@ -23,7 +23,8 @@ npx @apviso/runner onboard
 ## Requirements
 
 - Node.js 22 or newer.
-- Docker Engine access from the runner process.
+- [Docker Engine](https://docs.docker.com/engine/install/) access from the
+  runner process.
 - Egress to the APVISO API URL.
 - Network access from the runner host, or from the configured Docker network, to
   the applications it will scan.
