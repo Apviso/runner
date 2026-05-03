@@ -88,8 +88,13 @@ export class RunnerApi {
     listRunners() {
         return this.apiKeyRequest("/api/v1/runners");
     }
-    runnerReadiness(targetId) {
-        const query = targetId ? `?targetId=${encodeURIComponent(targetId)}` : "";
+    runnerReadiness(targetId, runnerId) {
+        const params = new URLSearchParams();
+        if (targetId)
+            params.set("targetId", targetId);
+        if (runnerId)
+            params.set("runnerId", runnerId);
+        const query = params.size > 0 ? `?${params}` : "";
         return this.apiKeyRequest(`/api/v1/runners/readiness${query}`);
     }
     createTarget(body) {

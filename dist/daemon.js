@@ -12,6 +12,7 @@ export class RunnerDaemon {
     shutdownController = new AbortController();
     shuttingDown = false;
     signalCount = 0;
+    runnerId;
     constructor(config) {
         this.config = config;
         if (!config.token)
@@ -19,7 +20,7 @@ export class RunnerDaemon {
         this.api = new RunnerApi(config);
     }
     async heartbeat(signal) {
-        await this.api.heartbeat({
+        const result = await this.api.heartbeat({
             version: RUNNER_VERSION,
             os: platform(),
             arch: arch(),
@@ -36,6 +37,8 @@ export class RunnerDaemon {
                 customCa: !!this.config.customCaPath,
             },
         }, signal);
+        if (result.runner.id)
+            this.runnerId = result.runner.id;
     }
     async run() {
         const cleanupSignalHandlers = this.installSignalHandlers();
@@ -80,6 +83,15 @@ export class RunnerDaemon {
                             break;
                         if (this.active.has(claim.job.job.id)) {
                             log("warn", "platform returned an already active job; skipping duplicate claim", { jobId: claim.job.job.id });
+                            break;
+                        }
+                        const claimedRunnerId = claim.job.runner?.id ?? claim.job.job.runnerId;
+                        if (claimedRunnerId && this.runnerId && claimedRunnerId !== this.runnerId) {
+                            log("error", "platform returned a job pinned to a different runner; refusing to start it", {
+                                jobId: claim.job.job.id,
+                                expectedRunnerId: this.runnerId,
+                                claimedRunnerId,
+                            });
                             break;
                         }
                         this.startJob(claim.job).catch((err) => log("error", "job failed outside handler", String(err)));

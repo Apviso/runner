@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { detectModelProvider, MODEL_PROVIDERS } from "./providers.js";
-export const RUNNER_VERSION = "0.1.0";
+export const RUNNER_VERSION = "0.1.1";
 export function normalizeApiUrl(input) {
     const trimmed = input.trim().replace(/\/+$/, "");
     const lower = trimmed.toLowerCase();

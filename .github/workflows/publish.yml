@@ -103,8 +103,18 @@ jobs:
           tarball="$(ls .release/*.tgz | head -n 1)"
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
 
+      - name: Check npm version
+        id: npm_version
+        run: |
+          if npm view "@apviso/runner@${{ steps.release.outputs.version }}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "@apviso/runner@${{ steps.release.outputs.version }} is already published."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish npm package
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_npm }}
+        if: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish_npm) && steps.npm_version.outputs.exists != 'true' }}
         run: npm publish "${{ steps.pack.outputs.tarball }}" --access public --tag "${{ steps.release.outputs.dist_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
