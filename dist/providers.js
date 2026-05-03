@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { accessSync, constants, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 export const MODEL_PROVIDERS = [
     "bedrock",
     "anthropic",
@@ -8,6 +10,8 @@ export const MODEL_PROVIDERS = [
     "github-copilot",
     "cloudflare-ai-gateway",
 ];
+export const OPENAI_CODEX_AUTH_FILE_DISPLAY = "~/.codex/auth.json";
+export const OPENAI_CODEX_LOGIN_REMEDIATION = `OpenAI Codex auth is required at ${OPENAI_CODEX_AUTH_FILE_DISPLAY}. Run \`codex login\` on the runner host to create it.`;
 function env(name, source) {
     const value = (process.env[name] || source?.providerEnv?.[name])?.trim();
     return value ? value : undefined;
@@ -15,14 +19,29 @@ function env(name, source) {
 function isAnthropicOAuthToken(value) {
     return !!value && value.startsWith("sk-ant-oat");
 }
+function userHomeDir() {
+    return process.env.HOME || process.env.USERPROFILE || homedir();
+}
 export function providerEnvValue(name, source) {
     return env(name, source);
 }
 export function hasOpenAIApiKey(source) {
     return !!env("OPENAI_API_KEY", source);
 }
-export function hasOpenAICodexToken(source) {
-    return !!openAICodexToken(source);
+export function openAICodexAuthFilePath() {
+    return join(userHomeDir(), ".codex", "auth.json");
+}
+export function hasOpenAICodexAuthFile() {
+    try {
+        accessSync(openAICodexAuthFilePath(), constants.R_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+export function hasOpenAICodexToken(_source) {
+    return !!openAICodexToken(_source);
 }
 export function githubCopilotToken(source) {
     return env("COPILOT_GITHUB_TOKEN", source) || env("GH_TOKEN", source) || env("GITHUB_TOKEN", source);
@@ -37,11 +56,8 @@ export function openAICodexToken(source) {
     const token = env("OPENAI_CODEX_OAUTH_TOKEN", source);
     if (token)
         return token;
-    const authFile = env("OPENAI_CODEX_AUTH_FILE", source);
-    if (!authFile)
-        return undefined;
     try {
-        const auth = JSON.parse(readFileSync(authFile, "utf8"));
+        const auth = JSON.parse(readFileSync(openAICodexAuthFilePath(), "utf8"));
         return typeof auth.tokens?.access_token === "string" && auth.tokens.access_token.trim()
             ? auth.tokens.access_token
             : undefined;
@@ -83,7 +99,7 @@ export function hasBedrockCredentials(source) {
 export function detectModelProvider(source) {
     if (hasOpenAIApiKey(source))
         return "openai";
-    if (hasOpenAICodexToken(source))
+    if (hasOpenAICodexAuthFile())
         return "openai-codex";
     if (hasGitHubCopilotAutoCredential(source))
         return "github-copilot";
@@ -106,7 +122,7 @@ export function providerState(modelProvider, embeddingProvider, source) {
         claudeCode: hasClaudeCodeToken(source),
         bedrock: hasBedrockCredentials(source),
         openai: hasOpenAIApiKey(source),
-        openaiCodex: hasOpenAICodexToken(source),
+        openaiCodex: hasOpenAICodexAuthFile(),
         githubCopilot: hasGitHubCopilotToken(source),
         cloudflareAiGateway: hasCloudflareAiGatewayCredentials(source),
         cloudflareAiGatewayMissing: missingCloudflareAiGatewayEnv(source),

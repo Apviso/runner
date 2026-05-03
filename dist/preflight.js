@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { accessSync, constants } from "node:fs";
 import { runCommand } from "./process.js";
-import { hasAnthropicCredential, hasBedrockCredentials, hasClaudeCodeToken, hasCloudflareAiGatewayCredentials, hasGitHubCopilotToken, hasOpenAIApiKey, hasOpenAICodexToken, missingCloudflareAiGatewayEnv, } from "./providers.js";
+import { hasAnthropicCredential, hasBedrockCredentials, hasClaudeCodeToken, hasCloudflareAiGatewayCredentials, hasGitHubCopilotToken, hasOpenAIApiKey, hasOpenAICodexAuthFile, missingCloudflareAiGatewayEnv, OPENAI_CODEX_LOGIN_REMEDIATION, } from "./providers.js";
 export const DOCKER_INSTALL_URL = "https://docs.docker.com/engine/install/";
 const DOCKER_REMEDIATION = `Install Docker Engine or Docker Desktop (${DOCKER_INSTALL_URL}), or make Docker socket access available to the runner.`;
 function check(ok, message, remediation) {
@@ -39,7 +39,7 @@ export function providerPreflight(config) {
         const missing = missingCloudflareAiGatewayEnv(config);
         return credentialCheck(hasCloudflareAiGatewayCredentials(config), "Cloudflare AI Gateway credentials present", "Cloudflare AI Gateway credentials are missing", `Set ${missing.length > 0 ? missing.join(", ") : "CLOUDFLARE_API_KEY, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_GATEWAY_ID"} on the runner host.`);
     }
-    return credentialCheck(hasOpenAICodexToken(config), "OpenAI Codex token present", "OpenAI Codex token is missing", "Set OPENAI_CODEX_OAUTH_TOKEN or OPENAI_CODEX_AUTH_FILE on the runner host.");
+    return credentialCheck(hasOpenAICodexAuthFile(), "OpenAI Codex auth file present", "OpenAI Codex auth file is missing", OPENAI_CODEX_LOGIN_REMEDIATION);
 }
 export async function runPreflight(config, job) {
     const checks = {};

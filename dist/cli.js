@@ -1,19 +1,16 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
-import { arch, platform } from "node:os";
 import { fileURLToPath } from "node:url";
-import { configPath, loadConfig, RUNNER_VERSION, saveConfig, saveRunnerToken } from "./config.js";
-import { RunnerApi } from "./api.js";
+import { configPath, loadConfig, RUNNER_VERSION, saveConfig } from "./config.js";
 import { RunnerDaemon } from "./daemon.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { redact } from "./log.js";
-import { hasBedrockCredentials, MODEL_PROVIDERS, providerEnvValue, providerState } from "./providers.js";
+import { hasBedrockCredentials, hasOpenAICodexAuthFile, MODEL_PROVIDERS, OPENAI_CODEX_LOGIN_REMEDIATION, } from "./providers.js";
 import { createPrompter, isPromptCancelled, promptChoice, promptNumber, promptRequired, promptSecret, promptString, promptYesNo, } from "./prompts.js";
 import { defaultTargetAuthPath, expandHome, upsertTargetAuthConfig, } from "./target-auth.js";
+import { addTargetAuth, AUTH_TYPES, createTarget, EMBEDDING_PROVIDERS, mergeProviderEnv, onboardRunner, registerRunner, tokenNamespace, VISIBILITIES, } from "./setup.js";
+import { startConsoleCommand } from "./console.js";
 import * as ui from "./ui.js";
-const EMBEDDING_PROVIDERS = ["local", "bedrock-cohere"];
-const VISIBILITIES = ["public", "staging_preview", "private_internal", "localhost", "partner_client"];
-const AUTH_TYPES = ["none", "bearer", "basic", "cookie", "api_key", "custom_headers", "login"];
 export function parseCliArgs(argv) {
     const [command = "help", maybeSubcommand, ...rest] = argv;
     const hasSubcommand = command === "add" && maybeSubcommand && !maybeSubcommand.startsWith("-");
@@ -58,8 +55,10 @@ Usage:
 Commands:
   onboard                  Configure and register this runner, or attach an existing runner token
   run                      Start polling for APVISO scan jobs
+  ui [--host 127.0.0.1] [--port 0] [--no-open]
+                           Start the local web console
   doctor [--json]          Run local and cloud readiness checks
-  add target [target]       Create a target and optional runner-local auth
+  add target [target]       Create a cloud target and optional runner-local auth
   add target-auth [target]  Add runner-local auth for an existing target ID, domain, or URL
   register --token <enrollment-token|runner-token> [--name local-runner]
                             Register with an enrollment token or store a rotated runner token
@@ -71,7 +70,8 @@ Environment:
   APVISO_API_URL, APVISO_API_KEY, APVISO_RUNNER_TOKEN, APVISO_MODEL_PROVIDER,
   APVISO_EMBEDDING_PROVIDER, APVISO_REQUIRE_IMAGE_SIGNATURE,
   APVISO_ALLOW_UNSIGNED_DEV_IMAGES, APVISO_TARGET_AUTH_CONFIG_FILE,
-  ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN/OPENAI_API_KEY/OPENAI_CODEX_OAUTH_TOKEN/COPILOT_GITHUB_TOKEN/CLOUDFLARE_API_KEY/AWS_*
+  ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN/OPENAI_API_KEY/COPILOT_GITHUB_TOKEN/CLOUDFLARE_API_KEY/AWS_*
+  OpenAI Codex uses ~/.codex/auth.json from \`codex login\`.
 `;
 }
 function setFlag(flags, key, value) {
@@ -138,43 +138,9 @@ function normalizeDomain(input) {
         return domain.replace(/\.$/, "").toLowerCase();
     }
 }
-function localRuntimeUrl(input, visibility) {
-    const value = input.trim();
-    if (!value)
-        return value;
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value))
-        return value;
-    if (visibility === "localhost" || /^(localhost|127\.|0\.0\.0\.0|\[::1\])/.test(value)) {
-        return `http://${value}`;
-    }
-    return value;
-}
-function registrationBody(config, enrollmentToken, name) {
-    return {
-        enrollmentToken,
-        name,
-        version: RUNNER_VERSION,
-        os: platform(),
-        arch: arch(),
-        containerEngine: "docker",
-        configuredConcurrency: config.concurrency,
-        providerState: providerState(config.modelProvider, config.embeddingProvider, config),
-    };
-}
-function tokenNamespace(token) {
-    return token.split("_", 1)[0] ?? "";
-}
 async function promptOptionalPath(prompter, label, current) {
     const answer = await promptString(prompter, label, current);
     return answer ? expandHome(answer) : undefined;
-}
-function mergeProviderEnv(current, updates) {
-    const next = { ...(current ?? {}) };
-    for (const [key, value] of Object.entries(updates ?? {})) {
-        if (value?.trim())
-            next[key] = value.trim();
-    }
-    return Object.keys(next).length > 0 ? next : undefined;
 }
 function currentProviderSecret(config, name) {
     return config.providerEnv?.[name] || process.env[name];
@@ -202,11 +168,9 @@ async function promptModelProviderEnv(prompter, provider, current) {
         return { OPENAI_API_KEY: value };
     }
     if (provider === "openai-codex") {
-        const value = await promptProviderSecret(prompter, current, "OPENAI_CODEX_OAUTH_TOKEN");
-        if (!value && !providerEnvValue("OPENAI_CODEX_AUTH_FILE", current)) {
-            throw new Error("OPENAI_CODEX_OAUTH_TOKEN or OPENAI_CODEX_AUTH_FILE is required for the openai-codex model provider.");
-        }
-        return value ? { OPENAI_CODEX_OAUTH_TOKEN: value } : undefined;
+        if (!hasOpenAICodexAuthFile())
+            throw new Error(OPENAI_CODEX_LOGIN_REMEDIATION);
+        return undefined;
     }
     if (provider === "github-copilot") {
         const value = await promptProviderSecret(prompter, current, "COPILOT_GITHUB_TOKEN");
@@ -258,16 +222,15 @@ async function commandRegister(parsed) {
     const name = flag(parsed.flags, "name") || config.runnerName;
     const namespace = tokenNamespace(enrollmentToken);
     if (namespace === "apvr") {
-        saveRunnerToken(enrollmentToken, config.apiUrl, name);
+        await registerRunner({ token: enrollmentToken, name });
         ui.success(`Runner token stored at ${configPath()}.`);
         return 0;
     }
     if (namespace !== "apve") {
         throw new Error("Expected an enrollment token starting with apve_ or a runner token starting with apvr_.");
     }
-    const api = new RunnerApi(config);
-    const result = await ui.withSpinner("Registering runner", () => api.register(registrationBody(config, enrollmentToken, name)), (registered) => `Registered runner ${registered.runner.name}`);
-    saveRunnerToken(result.token, config.apiUrl, name);
+    const result = await ui.withSpinner("Registering runner", () => registerRunner({ token: enrollmentToken, name }), (registered) => `Registered runner ${registered.runner?.name ?? name}`);
+    void result;
     ui.success(`Token stored at ${configPath()}.`);
     return 0;
 }
@@ -301,9 +264,6 @@ export async function commandOnboard(parsed, prompter = createPrompter()) {
         if (!apiCredential)
             throw new Error("APVISO API key, enrollment token, or runner token is required for onboarding.");
         const apiCredentialNamespace = tokenNamespace(apiCredential);
-        const userApiKey = apiCredentialNamespace === "apvr" || apiCredentialNamespace === "apve"
-            ? undefined
-            : apiCredential;
         const providedRunnerToken = apiCredentialNamespace === "apvr" ? apiCredential : undefined;
         const providedEnrollmentToken = apiCredentialNamespace === "apve" ? apiCredential : undefined;
         if (apiCredentialNamespace === "apvj") {
@@ -334,39 +294,28 @@ export async function commandOnboard(parsed, prompter = createPrompter()) {
         const targetAuthConfigFile = flag(parsed.flags, "target-auth-file") ||
             await promptOptionalPath(prompter, "Target auth config file (blank for none)", current.targetAuthConfigFile);
         ui.step("Saving runner configuration");
-        const configUpdate = {
+        const onboarding = await ui.withSpinner(providedRunnerToken
+            ? "Verifying runner token"
+            : providedEnrollmentToken
+                ? "Registering runner"
+                : "Creating enrollment token and registering runner", () => onboardRunner({
             apiUrl,
-            apiKey: userApiKey,
+            apiCredential,
             runnerName,
             modelProvider,
             embeddingProvider,
             providerEnv,
             concurrency,
             workspaceDir,
-            networkMode: networkMode || undefined,
-            proxy: proxy || undefined,
-            customCaPath: customCaPath || undefined,
-            targetAuthConfigFile: targetAuthConfigFile || undefined,
-        };
-        if (providedRunnerToken)
-            configUpdate.token = providedRunnerToken;
-        saveConfig(configUpdate);
-        const config = loadConfig();
-        const api = new RunnerApi(config);
-        if (providedRunnerToken) {
-            await ui.withSpinner("Verifying runner token", () => new RunnerDaemon(config).heartbeat(), "Runner token verified");
-            ui.success(`Runner token stored at ${configPath()}.`);
-        }
-        else {
-            const enrollmentToken = providedEnrollmentToken || (await ui.withSpinner("Creating enrollment token", () => api.createEnrollmentToken(runnerName), "Enrollment token created")).token;
-            const registered = await ui.withSpinner("Registering runner", () => api.register(registrationBody(config, enrollmentToken, runnerName)), (result) => `Registered runner ${result.runner.name}`);
-            saveRunnerToken(registered.token, config.apiUrl, runnerName);
-            ui.success(`Token stored at ${configPath()}.`);
-        }
-        const doctor = await ui.withSpinner("Running readiness checks", () => runDoctor(loadConfig()), "Readiness checks complete");
-        ui.message(formatDoctor(doctor));
-        ui.endScreen(doctor.ok ? "Runner is ready. Start it with `apviso run`." : "Onboarding finished, but checks need attention.");
-        return doctor.ok ? 0 : 2;
+            networkMode,
+            proxy,
+            customCaPath,
+            targetAuthConfigFile,
+        }), providedRunnerToken ? "Runner token verified" : "Runner registered");
+        ui.success(`Token stored at ${configPath()}.`);
+        ui.message(formatDoctor(onboarding.doctor));
+        ui.endScreen(onboarding.doctor.ok ? "Runner is ready. Start it with `apviso run`." : "Onboarding finished, but checks need attention.");
+        return onboarding.doctor.ok ? 0 : 2;
     }
     finally {
         prompter.close?.();
@@ -475,15 +424,13 @@ async function commandAddTarget(parsed, prompter = createPrompter()) {
             await promptChoice(prompter, "Target visibility", VISIBILITIES, "public"));
         const rawScanUrl = flag(parsed.flags, "scan-url") ||
             await promptString(prompter, "Runtime scan URL (blank to use display URL)");
-        const scanUrl = localRuntimeUrl(rawScanUrl || rawTarget, visibility);
-        const domain = normalizeDomain(rawTarget);
-        if (!domain)
-            throw new Error("Target display URL or domain is required.");
-        const result = await ui.withSpinner("Creating target", () => new RunnerApi(config).createTarget({
-            domain,
-            displayUrl: domain,
-            scanUrl,
+        const partnerClientId = flag(parsed.flags, "partner-client-id") ||
+            (visibility === "partner_client" ? await promptRequired(prompter, "Partner client ID") : "");
+        const result = await ui.withSpinner("Creating target", () => createTarget({
+            target: rawTarget,
+            scanUrl: rawScanUrl || undefined,
             visibility,
+            partnerClientId: partnerClientId || undefined,
         }), (created) => `Created target ${created.target.domain}`);
         ui.info(`Target ID: ${result.target.id}`);
         await maybeSaveTargetAuth(prompter, config, result.target, authTypesFromFlags(parsed.flags), {
@@ -507,16 +454,23 @@ export async function commandAddTargetAuth(parsed, prompter = createPrompter()) 
             (rawTarget.includes("://") ? rawTarget : domain || rawTarget);
         const scanUrl = flag(parsed.flags, "scan-url") ||
             await promptString(prompter, "Runtime scan URL (blank to omit)");
-        await maybeSaveTargetAuth(prompter, config, {
-            id: targetId,
-            domain: domain || normalizeDomain(displayUrl) || targetId,
+        const auths = await promptTargetAuths(prompter, authTypesFromFlags(parsed.flags));
+        if (auths.length === 0)
+            return 0;
+        const authFile = flag(parsed.flags, "target-auth-file") ||
+            config.targetAuthConfigFile ||
+            await promptRequired(prompter, "Target auth config file", defaultTargetAuthPath());
+        const result = addTargetAuth({
+            target: rawTarget,
+            targetId,
+            domain,
             displayUrl,
             scanUrl: scanUrl || undefined,
-        }, authTypesFromFlags(parsed.flags), {
-            authFilePath: flag(parsed.flags, "target-auth-file"),
-            promptToConfigure: false,
-            mode: "append",
+            auth: auths,
+            targetAuthFile: authFile,
+            authMode: "append",
         });
+        ui.success(`Updated runner-local auth config at ${result.authFile} with ${auths.length} auth entr${auths.length === 1 ? "y" : "ies"}.`);
         return 0;
     }
     finally {
@@ -542,6 +496,16 @@ export async function runCli(argv = process.argv.slice(2)) {
         return commandDoctor(parsed);
     if (parsed.command === "run")
         return commandRun();
+    if (parsed.command === "ui") {
+        const port = flag(parsed.flags, "port") ? Number(flag(parsed.flags, "port")) : 0;
+        if (!Number.isInteger(port) || port < 0 || port > 65_535)
+            throw new Error("--port must be a valid TCP port.");
+        return startConsoleCommand({
+            host: flag(parsed.flags, "host") || "127.0.0.1",
+            port,
+            open: !flagBool(parsed.flags, "no-open"),
+        });
+    }
     if (parsed.command === "add" && parsed.subcommand === "target")
         return commandAddTarget(parsed);
     if (parsed.command === "add" && parsed.subcommand === "target-auth")

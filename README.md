@@ -58,6 +58,16 @@ The runner stores local configuration at `~/.apviso-runner/config.json` by
 default with `0600` permissions. Set `APVISO_RUNNER_CONFIG` when running as a
 service.
 
+## Web Console
+
+```bash
+apviso ui
+```
+
+The local console binds to `127.0.0.1` by default and opens a per-session token
+URL. It can onboard the runner, run doctor checks, manage a daemon process it
+launches, create targets, save runner-local target auth, and show redacted logs.
+
 ## Run
 
 ```bash
@@ -123,6 +133,9 @@ APVISO_ALLOW_UNSIGNED_DEV_IMAGES=false
 Supported model providers: `anthropic`, `claude-code`, `openai`,
 `openai-codex`, `github-copilot`, `cloudflare-ai-gateway`, and `bedrock`.
 Supported embedding providers: `local` and `bedrock-cohere`.
+
+OpenAI Codex uses the standard Codex login file at `~/.codex/auth.json`.
+Run `codex login` on the runner host before selecting `openai-codex`.
 
 Production runners should leave `APVISO_REQUIRE_IMAGE_SIGNATURE=true` and
 `APVISO_ALLOW_UNSIGNED_DEV_IMAGES=false`. Use unsigned images only for local
