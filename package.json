@@ -1,6 +1,6 @@
 {
   "name": "@apviso/runner",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "APVISO self-hosted scan runner CLI and daemon.",
   "private": false,
   "type": "module",

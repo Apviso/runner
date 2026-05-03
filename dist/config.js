@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { detectModelProvider, MODEL_PROVIDERS } from "./providers.js";
-export const RUNNER_VERSION = "0.1.4";
+export const RUNNER_VERSION = "0.1.5";
 export function normalizeApiUrl(input) {
     const trimmed = input.trim().replace(/\/+$/, "");
     const lower = trimmed.toLowerCase();
@@ -83,7 +83,7 @@ function storedProviderEnv(stored) {
 export function loadConfig() {
     const stored = readStoredConfig();
     const providerEnv = storedProviderEnv(stored.providerEnv);
-    const apiUrl = normalizeApiUrl(process.env.APVISO_API_URL || stored.apiUrl || "http://localhost:3001");
+    const apiUrl = normalizeApiUrl(process.env.APVISO_API_URL || stored.apiUrl || "https://api.apviso.com");
     const envApiKey = process.env.APVISO_API_KEY;
     const apiKey = isRunnerScopedToken(envApiKey)
         ? undefined
@@ -113,7 +113,7 @@ export function loadConfig() {
         proxy: process.env.HTTPS_PROXY || process.env.HTTP_PROXY || stored.proxy,
         customCaPath: process.env.APVISO_CUSTOM_CA_PATH || stored.customCaPath,
         targetAuthConfigFile: process.env.APVISO_TARGET_AUTH_CONFIG_FILE || stored.targetAuthConfigFile,
-        requireImageSignature: booleanEnv("APVISO_REQUIRE_IMAGE_SIGNATURE", stored.requireImageSignature ?? false),
+        requireImageSignature: booleanEnv("APVISO_REQUIRE_IMAGE_SIGNATURE", stored.requireImageSignature ?? true),
         allowUnsignedDevImages: booleanEnv("APVISO_ALLOW_UNSIGNED_DEV_IMAGES", stored.allowUnsignedDevImages ?? false),
     };
     mkdirSync(config.workspaceDir, { recursive: true });

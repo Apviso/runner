@@ -4,7 +4,7 @@ import { RunnerApi } from "./api.js";
 import { RunnerDaemon } from "./daemon.js";
 import { runDoctor } from "./doctor.js";
 import { hasAnthropicCredential, hasBedrockCredentials, hasClaudeCodeToken, hasCloudflareAiGatewayCredentials, hasGitHubCopilotToken, hasOpenAIApiKey, hasOpenAICodexAuthFile, missingCloudflareAiGatewayEnv, MODEL_PROVIDERS, OPENAI_CODEX_LOGIN_REMEDIATION, providerState, } from "./providers.js";
-import { defaultTargetAuthPath, expandHome, upsertTargetAuthConfig, } from "./target-auth.js";
+import { defaultTargetAuthPath, expandHome, readTargetAuthSummaries, upsertTargetAuthConfig, } from "./target-auth.js";
 export const EMBEDDING_PROVIDERS = ["local", "bedrock-cohere"];
 export const VISIBILITIES = ["public", "staging_preview", "private_internal", "localhost", "partner_client"];
 export const AUTH_TYPES = ["none", "bearer", "basic", "cookie", "api_key", "custom_headers", "login"];
@@ -281,6 +281,55 @@ export async function createTarget(input) {
             saveConfig({ targetAuthConfigFile: expandHome(authFile) });
     }
     return { target: result.target, authFile: authFile ? expandHome(authFile) : undefined };
+}
+export async function listPlatformTargets() {
+    const config = loadConfig();
+    if (!config.apiKey && !config.token) {
+        throw new Error("APVISO_API_KEY or APVISO_RUNNER_TOKEN is required. Run `apviso onboard` first.");
+    }
+    const api = new RunnerApi(config);
+    const limit = 100;
+    const targets = [];
+    let total = 0;
+    let page = 1;
+    while (page <= 100) {
+        const result = await api.listTargets(page, limit);
+        targets.push(...result.targets);
+        total = result.total ?? targets.length;
+        if (result.totalPages !== undefined ? page >= result.totalPages : result.targets.length < limit)
+            break;
+        page += 1;
+    }
+    const targetAuthFile = expandHome(config.targetAuthConfigFile || defaultTargetAuthPath());
+    let targetAuthError;
+    let authSummaries = {};
+    try {
+        authSummaries = readTargetAuthSummaries(targetAuthFile);
+    }
+    catch (err) {
+        targetAuthError = err instanceof Error ? err.message : String(err);
+    }
+    return {
+        targets: targets.map((target) => ({
+            ...target,
+            targetAuth: authSummaries[target.id] ?? { configured: false, count: 0, types: [] },
+        })),
+        total,
+        targetAuthFile,
+        ...(targetAuthError ? { targetAuthError } : {}),
+    };
+}
+export async function savePlatformTargetAuth(input) {
+    const config = loadConfig();
+    if (!config.apiKey && !config.token) {
+        throw new Error("APVISO_API_KEY or APVISO_RUNNER_TOKEN is required. Run `apviso onboard` first.");
+    }
+    const { target } = await new RunnerApi(config).getTarget(input.targetId);
+    const authFile = input.targetAuthFile || config.targetAuthConfigFile || defaultTargetAuthPath();
+    upsertTargetAuthConfig(authFile, target, input.auth, { mode: input.authMode ?? "append" });
+    if (!config.targetAuthConfigFile)
+        saveConfig({ targetAuthConfigFile: expandHome(authFile) });
+    return { target, authFile: expandHome(authFile) };
 }
 export function addTargetAuth(input) {
     const config = loadConfig();

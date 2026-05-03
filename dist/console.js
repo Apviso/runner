@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { configPath, loadConfig, RUNNER_VERSION } from "./config.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { redact } from "./log.js";
-import { createTarget, embeddingCredentialNames, providerCredentialNames, safeRunnerConfig, saveRunnerConfig, setupOptions, onboardRunner, } from "./setup.js";
+import { createTarget, embeddingCredentialNames, listPlatformTargets, providerCredentialNames, safeRunnerConfig, savePlatformTargetAuth, saveRunnerConfig, setupOptions, onboardRunner, } from "./setup.js";
 import * as ui from "./ui.js";
 const MIME_TYPES = {
     ".css": "text/css; charset=utf-8",
@@ -252,6 +252,10 @@ export async function startConsoleServer(options = {}) {
                 sendJson(res, 200, { daemon: await daemon.restart() });
                 return;
             }
+            if (req.method === "GET" && requestUrl.pathname === "/api/targets") {
+                sendJson(res, 200, await listPlatformTargets());
+                return;
+            }
             if (req.method === "POST" && requestUrl.pathname === "/api/targets") {
                 const body = await readJson(req);
                 const result = await createTarget({
@@ -259,6 +263,19 @@ export async function startConsoleServer(options = {}) {
                     visibility: String(body.visibility || "public"),
                     scanUrl: typeof body.scanUrl === "string" ? body.scanUrl : undefined,
                     partnerClientId: typeof body.partnerClientId === "string" ? body.partnerClientId : undefined,
+                    auth: body.auth,
+                    targetAuthFile: typeof body.targetAuthFile === "string" ? body.targetAuthFile : undefined,
+                    authMode: "append",
+                });
+                events.emit("target", { target: result.target, authFile: result.authFile });
+                sendJson(res, 200, { target: result.target, authFile: result.authFile });
+                return;
+            }
+            const targetAuthMatch = requestUrl.pathname.match(/^\/api\/targets\/([^/]+)\/auth$/);
+            if (req.method === "POST" && targetAuthMatch) {
+                const body = await readJson(req);
+                const result = await savePlatformTargetAuth({
+                    targetId: decodeURIComponent(targetAuthMatch[1]),
                     auth: body.auth,
                     targetAuthFile: typeof body.targetAuthFile === "string" ? body.targetAuthFile : undefined,
                     authMode: "append",

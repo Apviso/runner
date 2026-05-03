@@ -42,6 +42,13 @@ export class RunnerApi {
             throw new Error("APVISO_API_KEY is required. Run `apviso onboard` first.");
         return this.request(path, init, { apiKey: this.config.apiKey });
     }
+    platformTargetRequest(apiKeyPath, runnerPath, init = {}) {
+        if (this.config.apiKey)
+            return this.request(apiKeyPath, init, { apiKey: this.config.apiKey });
+        if (this.config.token)
+            return this.request(runnerPath, init, { runnerToken: this.config.token });
+        throw new Error("APVISO_API_KEY or APVISO_RUNNER_TOKEN is required. Run `apviso onboard` first.");
+    }
     register(body) {
         return this.request("/api/runner/register", {
             method: "POST",
@@ -102,6 +109,18 @@ export class RunnerApi {
             method: "POST",
             body: JSON.stringify(body),
         });
+    }
+    listTargets(page = 1, limit = 100) {
+        const params = new URLSearchParams({
+            page: String(page),
+            limit: String(limit),
+        });
+        const query = `?${params}`;
+        return this.platformTargetRequest(`/api/v1/targets${query}`, `/api/runner/targets${query}`);
+    }
+    getTarget(targetId) {
+        const encodedTargetId = encodeURIComponent(targetId);
+        return this.platformTargetRequest(`/api/v1/targets/${encodedTargetId}`, `/api/runner/targets/${encodedTargetId}`);
     }
     scanCallbackUrl(job) {
         return `${this.config.apiUrl}${job.platform.callbackBasePath}`;

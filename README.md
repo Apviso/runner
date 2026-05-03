@@ -139,7 +139,8 @@ Run `codex login` on the runner host before selecting `openai-codex`.
 
 Production runners should leave `APVISO_REQUIRE_IMAGE_SIGNATURE=true` and
 `APVISO_ALLOW_UNSIGNED_DEV_IMAGES=false`. Use unsigned images only for local
-development.
+development. These are the runner defaults unless overridden in the environment
+or saved config.
 
 ## Local Target Auth
 

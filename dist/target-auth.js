@@ -91,3 +91,47 @@ export function upsertTargetAuthConfig(filePath, target, auth, options = {}) {
     writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
     chmodSync(path, 0o600);
 }
+function targetAuthSummary(auths) {
+    return {
+        configured: auths.length > 0,
+        count: auths.length,
+        types: Array.from(new Set(auths.map((auth) => auth.type))).sort(),
+    };
+}
+function mergeTargetAuthSummary(existing, incoming) {
+    if (!existing)
+        return incoming;
+    return {
+        configured: existing.configured || incoming.configured,
+        count: existing.count + incoming.count,
+        types: Array.from(new Set([...existing.types, ...incoming.types])).sort(),
+    };
+}
+export function readTargetAuthSummaries(filePath) {
+    const path = expandHome(filePath || defaultTargetAuthPath());
+    const existing = readJsonFile(path);
+    const summaries = {};
+    const targets = existing.targets;
+    if (Array.isArray(targets)) {
+        for (const entry of targets) {
+            if (!isRecord(entry) || typeof entry.targetId !== "string")
+                continue;
+            const auths = targetAuthsFromValue(entry);
+            if (auths.length === 0)
+                continue;
+            const incoming = targetAuthSummary(auths);
+            summaries[entry.targetId] = mergeTargetAuthSummary(summaries[entry.targetId], incoming);
+        }
+        return summaries;
+    }
+    if (isRecord(targets)) {
+        for (const [targetId, value] of Object.entries(targets)) {
+            const auths = targetAuthsFromValue(value);
+            if (auths.length === 0)
+                continue;
+            const incoming = targetAuthSummary(auths);
+            summaries[targetId] = mergeTargetAuthSummary(summaries[targetId], incoming);
+        }
+    }
+    return summaries;
+}
