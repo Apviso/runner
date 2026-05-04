@@ -6,6 +6,24 @@ artifacts are published here, on npm, and on GitHub Container Registry.
 
 ## Install
 
+Install and immediately start the local web console:
+
+```bash
+curl -fsSL https://apviso.com/install.sh | bash
+```
+
+The installer requires Node.js 22 or newer plus npm. It runs
+`npm install -g @apviso/runner`, then launches `apviso`, which opens the local
+browser console by default.
+
+To install without starting the console:
+
+```bash
+curl -fsSL https://apviso.com/install.sh | APVISO_INSTALL_ONLY=1 bash
+```
+
+You can also install with npm directly:
+
 ```bash
 npm install -g @apviso/runner
 apviso version
@@ -61,12 +79,19 @@ service.
 ## Web Console
 
 ```bash
-apviso ui
+apviso
 ```
 
-The local console binds to `127.0.0.1` by default and opens a per-session token
-URL. It can onboard the runner, run doctor checks, manage a daemon process it
-launches, create targets, save runner-local target auth, and show redacted logs.
+`apviso ui` and `apviso start` do the same thing explicitly.
+
+On first launch without a stored runner token, the console opens onboarding
+first. After the runner is registered, the operator dashboard is unlocked.
+
+The local console binds to `127.0.0.1` by default and opens a per-session
+bootstrap token URL. The token is exchanged for a same-origin `HttpOnly` cookie
+and removed from the browser URL. It can onboard the runner, run doctor checks,
+manage a daemon process it launches, create targets, save runner-local target
+auth, and show redacted logs.
 
 ## Run
 
@@ -128,6 +153,12 @@ APVISO_EMBEDDING_PROVIDER=local
 APVISO_TARGET_AUTH_CONFIG_FILE=/etc/apviso/target-auth.json
 APVISO_REQUIRE_IMAGE_SIGNATURE=true
 APVISO_ALLOW_UNSIGNED_DEV_IMAGES=false
+APVISO_COSIGN_CERT_IDENTITY_REGEXP='^https://github.com/apviso/.+'
+APVISO_COSIGN_CERT_OIDC_ISSUER=https://token.actions.githubusercontent.com
+APVISO_CUSTOM_CA_PATH=/etc/apviso/custom-ca.pem
+APVISO_API_TIMEOUT_MS=30000
+APVISO_SCAN_TIMEOUT_MS=10800000
+APVISO_SCAN_PIDS_LIMIT=512
 ```
 
 Supported model providers: `anthropic`, `claude-code`, `openai`,
@@ -138,9 +169,17 @@ OpenAI Codex uses the standard Codex login file at `~/.codex/auth.json`.
 Run `codex login` on the runner host before selecting `openai-codex`.
 
 Production runners should leave `APVISO_REQUIRE_IMAGE_SIGNATURE=true` and
-`APVISO_ALLOW_UNSIGNED_DEV_IMAGES=false`. Use unsigned images only for local
-development. These are the runner defaults unless overridden in the environment
-or saved config.
+`APVISO_ALLOW_UNSIGNED_DEV_IMAGES=false`. With the default policy, the runner
+pulls the digest-pinned scan image and verifies it with `cosign` before running
+it. For custom scan-image signing, set `APVISO_COSIGN_PUBLIC_KEY_FILE`,
+`APVISO_COSIGN_PUBLIC_KEY`, or the `APVISO_COSIGN_CERT_*` trust settings. Use
+unsigned images only for local development. These are the runner defaults unless
+overridden in the environment or saved config.
+
+Job-scoped APVISO callback tokens are mounted into scan containers as read-only
+files and exposed via `APVISO_JOB_TOKEN_FILE` and `APVISO_SCAN_TOKEN_FILE`. Set
+`APVISO_EXPOSE_JOB_TOKENS_IN_ENV=true` only for compatibility with older scan
+images that cannot read the file-based form.
 
 ## Local Target Auth
 

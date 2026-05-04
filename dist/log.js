@@ -7,7 +7,11 @@ const SECRET_PATTERNS = [
     /sk-ant-[A-Za-z0-9_-]{16,}/g,
     /((?:AWS_BEARER_TOKEN_BEDROCK|AWS_SECRET_ACCESS_KEY|OPENAI_CODEX_OAUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_OAUTH_TOKEN|ANTHROPIC_AUTH_TOKEN|COPILOT_GITHUB_TOKEN|GH_TOKEN|GITHUB_TOKEN|CLOUDFLARE_API_KEY)["']?\s*[:=]\s*["']?)[^"',\s}]+/gi,
     /(authorization:\s*bearer\s+)[^\s]+/gi,
+    /(authorization:\s*basic\s+)[^\s]+/gi,
+    /(cookie:\s*)[^\r\n]+/gi,
     /([A-Za-z0-9_]*API_KEY=)[^\s]+/g,
+    /((?:password|passwd|token|secret|cookieValue|headerValue|scanToken|jobToken)["']?\s*[:=]\s*["']?)[^"',\s}]+/gi,
+    /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
 ];
 const ANSI = {
     reset: "\x1b[0m",

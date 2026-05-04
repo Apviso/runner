@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { configPath, loadConfig, RUNNER_VERSION, saveConfig } from "./config.js";
 import { RunnerDaemon } from "./daemon.js";
@@ -11,10 +11,24 @@ import { defaultTargetAuthPath, expandHome, upsertTargetAuthConfig, } from "./ta
 import { addTargetAuth, AUTH_TYPES, createTarget, EMBEDDING_PROVIDERS, mergeProviderEnv, onboardRunner, registerRunner, tokenNamespace, VISIBILITIES, } from "./setup.js";
 import { startConsoleCommand } from "./console.js";
 import * as ui from "./ui.js";
+function parseCookieHeader(header) {
+    return header
+        .split(";")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => {
+        const [name = "", ...valueParts] = part.split("=");
+        return { name: name.trim(), value: valueParts.join("=").trim(), path: "/" };
+    })
+        .filter((cookie) => cookie.name && cookie.value);
+}
 export function parseCliArgs(argv) {
-    const [command = "help", maybeSubcommand, ...rest] = argv;
+    const first = argv[0];
+    const defaultToUi = first === undefined || (first.startsWith("-") && first !== "--help" && first !== "-h");
+    const command = defaultToUi ? "ui" : first;
+    const [, maybeSubcommand, ...rest] = argv;
     const hasSubcommand = command === "add" && maybeSubcommand && !maybeSubcommand.startsWith("-");
-    const args = hasSubcommand ? rest : argv.slice(1);
+    const args = defaultToUi ? argv : hasSubcommand ? rest : argv.slice(1);
     const flags = {};
     const positionals = [];
     for (let index = 0; index < args.length; index += 1) {
@@ -50,12 +64,14 @@ function usage() {
     return `APVISO Runner ${RUNNER_VERSION}
 
 Usage:
+  apviso [options]
   apviso <command> [options]
 
 Commands:
+  (no command)             Start the local web console
   onboard                  Configure and register this runner, or attach an existing runner token
   run                      Start polling for APVISO scan jobs
-  ui [--host 127.0.0.1] [--port 0] [--no-open]
+  ui, start [--host 127.0.0.1] [--port 0] [--no-open]
                            Start the local web console
   doctor [--json]          Run local and cloud readiness checks
   add target [target]       Create a cloud target and optional runner-local auth
@@ -342,6 +358,13 @@ async function promptTargetAuth(prompter, forcedType) {
             cookieValue: await promptRequired(prompter, "Cookie value"),
         };
     }
+    if (type === "cookies") {
+        const cookieHeader = await promptRequired(prompter, "Cookie header (name=value; other=value)");
+        const cookies = parseCookieHeader(cookieHeader);
+        if (cookies.length === 0)
+            throw new Error("At least one cookie is required.");
+        return { type, cookies };
+    }
     if (type === "api_key") {
         return {
             type,
@@ -368,6 +391,11 @@ async function promptTargetAuth(prompter, forcedType) {
         if (headers.length === 0)
             throw new Error("At least one custom header is required.");
         return { type, headers };
+    }
+    if (type === "browser_state") {
+        const path = expandHome(await promptRequired(prompter, "Playwright storageState JSON file"));
+        const storageState = JSON.parse(readFileSync(path, "utf8"));
+        return { type, storageState };
     }
     throw new Error(`Unsupported auth type: ${type}`);
 }
@@ -496,7 +524,7 @@ export async function runCli(argv = process.argv.slice(2)) {
         return commandDoctor(parsed);
     if (parsed.command === "run")
         return commandRun();
-    if (parsed.command === "ui") {
+    if (parsed.command === "ui" || parsed.command === "start") {
         const port = flag(parsed.flags, "port") ? Number(flag(parsed.flags, "port")) : 0;
         if (!Number.isInteger(port) || port < 0 || port > 65_535)
             throw new Error("--port must be a valid TCP port.");

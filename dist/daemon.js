@@ -9,6 +9,7 @@ export class RunnerDaemon {
     config;
     api;
     active = new Map();
+    activeTasks = new Set();
     shutdownController = new AbortController();
     shuttingDown = false;
     signalCount = 0;
@@ -94,7 +95,12 @@ export class RunnerDaemon {
                             });
                             break;
                         }
-                        this.startJob(claim.job).catch((err) => log("error", "job failed outside handler", String(err)));
+                        const task = this.startJob(claim.job)
+                            .catch((err) => log("error", "job failed outside handler", String(err)))
+                            .finally(() => {
+                            this.activeTasks.delete(task);
+                        });
+                        this.activeTasks.add(task);
                     }
                 }
                 catch (err) {
@@ -107,6 +113,10 @@ export class RunnerDaemon {
         finally {
             if (heartbeatTimer)
                 clearInterval(heartbeatTimer);
+            if (this.activeTasks.size > 0) {
+                log("info", "waiting for active jobs to finish", { activeJobs: this.activeTasks.size });
+                await Promise.allSettled([...this.activeTasks]);
+            }
             cleanupSignalHandlers();
             log("info", "runner daemon stopped", { activeJobs: this.active.size });
         }
@@ -164,6 +174,11 @@ export class RunnerDaemon {
                 runnerVersion: RUNNER_VERSION,
             });
             const result = await runScanContainer(this.config, job, abortController.signal);
+            log(result.exitCode === 0 ? "info" : "warn", "container exited", {
+                jobId: job.job.id,
+                exitCode: result.exitCode,
+                logsPath: result.logsPath,
+            });
             const cancelled = abortController.signal.aborted;
             await this.api.finish(job.job.id, {
                 status: cancelled ? "cancelled" : result.exitCode === 0 ? "completed" : "failed",

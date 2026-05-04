@@ -7,7 +7,7 @@ import { hasAnthropicCredential, hasBedrockCredentials, hasClaudeCodeToken, hasC
 import { defaultTargetAuthPath, expandHome, readTargetAuthSummaries, upsertTargetAuthConfig, } from "./target-auth.js";
 export const EMBEDDING_PROVIDERS = ["local", "bedrock-cohere"];
 export const VISIBILITIES = ["public", "staging_preview", "private_internal", "localhost", "partner_client"];
-export const AUTH_TYPES = ["none", "bearer", "basic", "cookie", "api_key", "custom_headers", "login"];
+export const AUTH_TYPES = ["none", "bearer", "basic", "cookie", "cookies", "api_key", "custom_headers", "browser_state", "login"];
 export function tokenNamespace(token) {
     return token.split("_", 1)[0] ?? "";
 }
@@ -58,9 +58,12 @@ export function registrationBody(config, enrollmentToken, name) {
 export function mergeProviderEnv(current, updates) {
     const next = { ...(current ?? {}) };
     for (const [key, value] of Object.entries(updates ?? {})) {
+        if (key === "OPENAI_CODEX_OAUTH_TOKEN")
+            continue;
         if (value?.trim())
             next[key] = value.trim();
     }
+    delete next.OPENAI_CODEX_OAUTH_TOKEN;
     return Object.keys(next).length > 0 ? next : undefined;
 }
 function assertRunnerTiming(config) {
@@ -157,6 +160,7 @@ export async function registerRunner(input) {
     const name = input.name || config.runnerName;
     const namespace = tokenNamespace(input.token);
     if (namespace === "apvr") {
+        await new RunnerDaemon({ ...config, token: input.token, runnerName: name }).heartbeat();
         saveRunnerToken(input.token, config.apiUrl, name);
         return { mode: "runner-token", config: loadConfig() };
     }
@@ -282,6 +286,25 @@ export async function createTarget(input) {
     }
     return { target: result.target, authFile: authFile ? expandHome(authFile) : undefined };
 }
+function targetAuthSummaryCandidates(target) {
+    const candidates = [
+        target.id,
+        target.domain,
+        target.displayUrl || undefined,
+        target.scanUrl || undefined,
+        target.displayUrl ? normalizeDomain(target.displayUrl) : undefined,
+        target.scanUrl ? normalizeDomain(target.scanUrl) : undefined,
+    ];
+    return Array.from(new Set(candidates.filter((value) => !!value)));
+}
+function targetAuthSummaryFor(target, summaries) {
+    for (const candidate of targetAuthSummaryCandidates(target)) {
+        const summary = summaries[candidate];
+        if (summary)
+            return summary;
+    }
+    return { configured: false, count: 0, types: [] };
+}
 export async function listPlatformTargets() {
     const config = loadConfig();
     if (!config.apiKey && !config.token) {
@@ -312,7 +335,7 @@ export async function listPlatformTargets() {
     return {
         targets: targets.map((target) => ({
             ...target,
-            targetAuth: authSummaries[target.id] ?? { configured: false, count: 0, types: [] },
+            targetAuth: targetAuthSummaryFor(target, authSummaries),
         })),
         total,
         targetAuthFile,

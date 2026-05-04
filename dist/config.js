@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { detectModelProvider, MODEL_PROVIDERS } from "./providers.js";
-export const RUNNER_VERSION = "0.1.5";
+export const RUNNER_VERSION = "0.1.6";
 export function normalizeApiUrl(input) {
     const trimmed = input.trim().replace(/\/+$/, "");
     const lower = trimmed.toLowerCase();
@@ -77,6 +77,7 @@ function storedProviderEnv(stored) {
         return undefined;
     const entries = Object.entries(stored)
         .map(([key, value]) => [key.trim(), value.trim()])
+        .filter(([key]) => key !== "OPENAI_CODEX_OAUTH_TOKEN")
         .filter(([key, value]) => key && value);
     return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }

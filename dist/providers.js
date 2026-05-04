@@ -19,6 +19,24 @@ function env(name, source) {
 function isAnthropicOAuthToken(value) {
     return !!value && value.startsWith("sk-ant-oat");
 }
+function openAICodexAccountId(token) {
+    if (!token)
+        return undefined;
+    const parts = token.split(".");
+    if (parts.length !== 3)
+        return undefined;
+    try {
+        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+        const accountId = payload["https://api.openai.com/auth"]?.chatgpt_account_id;
+        return typeof accountId === "string" && accountId ? accountId : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function validOpenAICodexToken(token) {
+    return openAICodexAccountId(token) ? token : undefined;
+}
 function userHomeDir() {
     return process.env.HOME || process.env.USERPROFILE || homedir();
 }
@@ -52,15 +70,15 @@ export function hasGitHubCopilotToken(source) {
 function hasGitHubCopilotAutoCredential(source) {
     return !!env("COPILOT_GITHUB_TOKEN", source);
 }
-export function openAICodexToken(source) {
-    const token = env("OPENAI_CODEX_OAUTH_TOKEN", source);
+export function openAICodexToken(_source) {
+    const token = validOpenAICodexToken(process.env.OPENAI_CODEX_OAUTH_TOKEN);
     if (token)
         return token;
     try {
         const auth = JSON.parse(readFileSync(openAICodexAuthFilePath(), "utf8"));
-        return typeof auth.tokens?.access_token === "string" && auth.tokens.access_token.trim()
-            ? auth.tokens.access_token
-            : undefined;
+        return validOpenAICodexToken(typeof auth.tokens?.access_token === "string"
+            ? auth.tokens.access_token.trim()
+            : undefined);
     }
     catch {
         return undefined;

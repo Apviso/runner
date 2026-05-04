@@ -1,3 +1,4 @@
+import { runnerFetch } from "./fetch.js";
 export class ApiError extends Error {
     status;
     constructor(message, status) {
@@ -19,7 +20,7 @@ export class RunnerApi {
             headers.Authorization = `Bearer ${auth.runnerToken}`;
         if (auth.apiKey)
             headers["X-API-Key"] = auth.apiKey;
-        const res = await fetch(`${this.config.apiUrl}${path}`, {
+        const res = await runnerFetch(this.config, `${this.config.apiUrl}${path}`, {
             ...init,
             headers,
         });

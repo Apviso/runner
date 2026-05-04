@@ -50,6 +50,7 @@ export class DaemonManager {
     options;
     child;
     stopping = false;
+    pendingClaim;
     logBuffer = [];
     stateValue = {
         status: "stopped",
@@ -157,9 +158,23 @@ export class DaemonManager {
         if (line.includes("runner daemon running"))
             this.updateState({ lastHeartbeatAt: at });
         if (line.includes("claimed job")) {
+            const placeholder = `Claimed job at ${at}`;
+            this.pendingClaim = { placeholder };
             this.updateState({
                 activeJobCount: this.stateValue.activeJobCount + 1,
-                recentJobs: [`Claimed job at ${at}`, ...this.stateValue.recentJobs].slice(0, 8),
+                recentJobs: [placeholder, ...this.stateValue.recentJobs].slice(0, 8),
+            });
+        }
+        const pendingClaim = this.pendingClaim;
+        const pendingJobId = pendingClaim ? parseStructuredLogField(line, "job id") : undefined;
+        if (pendingClaim && pendingJobId) {
+            const placeholder = pendingClaim.placeholder;
+            this.pendingClaim = undefined;
+            this.updateState({
+                recentJobs: [
+                    pendingJobId,
+                    ...this.stateValue.recentJobs.filter((job) => job !== pendingJobId && job !== placeholder),
+                ].slice(0, 8),
             });
         }
         if (line.includes("job failed") || line.includes("container exited") || line.includes("runner daemon stopped")) {
@@ -201,6 +216,17 @@ export async function startConsoleServer(options = {}) {
     const server = createServer(async (req, res) => {
         try {
             const requestUrl = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
+            if (!requestUrl.pathname.startsWith("/api/") && requestUrl.searchParams.get("token") === token) {
+                requestUrl.searchParams.delete("token");
+                const location = `${requestUrl.pathname}${requestUrl.search}`;
+                res.writeHead(302, {
+                    "Cache-Control": "no-store",
+                    "Location": location || "/",
+                    "Set-Cookie": consoleTokenCookie(token),
+                });
+                res.end();
+                return;
+            }
             if (requestUrl.pathname.startsWith("/api/") && !isAuthorized(req, requestUrl, token)) {
                 sendJson(res, 401, { error: "Unauthorized" });
                 return;
@@ -285,7 +311,7 @@ export async function startConsoleServer(options = {}) {
                 return;
             }
             if (req.method === "GET" && requestUrl.pathname === "/api/logs") {
-                const jobId = requestUrl.searchParams.get("jobId");
+                const jobId = requestUrl.searchParams.get("jobId")?.trim();
                 if (jobId) {
                     sendJson(res, 200, { logs: readJobLog(loadConfig().workspaceDir, jobId) });
                 }
@@ -360,7 +386,28 @@ function isAuthorized(req, requestUrl, token) {
     const header = req.headers["x-apviso-console-token"];
     const headerToken = Array.isArray(header) ? header[0] : header;
     const authorization = req.headers.authorization?.replace(/^Bearer\s+/i, "");
-    return headerToken === token || authorization === token || requestUrl.searchParams.get("token") === token;
+    return headerToken === token || authorization === token || cookieValue(req, "apviso_console_token") === token;
+}
+function consoleTokenCookie(token) {
+    return [
+        `apviso_console_token=${encodeURIComponent(token)}`,
+        "Path=/",
+        "HttpOnly",
+        "SameSite=Strict",
+        "Max-Age=86400",
+    ].join("; ");
+}
+function cookieValue(req, name) {
+    const cookie = req.headers.cookie;
+    if (!cookie)
+        return undefined;
+    for (const part of cookie.split(";")) {
+        const [rawKey = "", ...rawValue] = part.trim().split("=");
+        if (rawKey !== name)
+            continue;
+        return decodeURIComponent(rawValue.join("="));
+    }
+    return undefined;
 }
 async function readJson(req) {
     let raw = "";
@@ -437,6 +484,11 @@ function readJobLog(workspaceDir, jobId) {
         return "";
     const lines = readFileSync(logPath, "utf8").split(/\r?\n/).slice(-500);
     return redact(lines.join("\n"));
+}
+function parseStructuredLogField(line, field) {
+    const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = line.match(new RegExp(`^\\s*${escapedField}\\s+(.+)$`, "i"));
+    return match?.[1]?.trim();
 }
 function openBrowser(url) {
     const command = platform() === "darwin"

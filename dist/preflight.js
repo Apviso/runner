@@ -1,6 +1,8 @@
 import { lookup } from "node:dns/promises";
 import { accessSync, constants } from "node:fs";
+import { isIP } from "node:net";
 import { runCommand } from "./process.js";
+import { runnerFetch } from "./fetch.js";
 import { hasAnthropicCredential, hasBedrockCredentials, hasClaudeCodeToken, hasCloudflareAiGatewayCredentials, hasGitHubCopilotToken, hasOpenAIApiKey, hasOpenAICodexAuthFile, missingCloudflareAiGatewayEnv, OPENAI_CODEX_LOGIN_REMEDIATION, } from "./providers.js";
 export const DOCKER_INSTALL_URL = "https://docs.docker.com/engine/install/";
 const DOCKER_REMEDIATION = `Install Docker Engine or Docker Desktop (${DOCKER_INSTALL_URL}), or make Docker socket access available to the runner.`;
@@ -18,6 +20,44 @@ function readableFile(path) {
     catch {
         return false;
     }
+}
+function isBlockedIpv4(address) {
+    const parts = address.split(".").map((part) => Number(part));
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255))
+        return true;
+    const [a, b] = parts;
+    return a === 0 ||
+        a === 10 ||
+        a === 127 ||
+        a === 169 && b === 254 ||
+        a === 172 && b >= 16 && b <= 31 ||
+        a === 192 && b === 168 ||
+        a === 100 && b >= 64 && b <= 127 ||
+        a === 198 && (b === 18 || b === 19) ||
+        a >= 224;
+}
+function isBlockedIp(address) {
+    const mappedIpv4 = address.match(/^::ffff:(?<ipv4>\d+\.\d+\.\d+\.\d+)$/i)?.groups?.ipv4;
+    if (mappedIpv4)
+        return isBlockedIpv4(mappedIpv4);
+    const kind = isIP(address);
+    if (kind === 4)
+        return isBlockedIpv4(address);
+    if (kind !== 6)
+        return true;
+    const lower = address.toLowerCase();
+    return lower === "::" ||
+        lower === "::1" ||
+        lower.startsWith("fc") ||
+        lower.startsWith("fd") ||
+        lower.startsWith("fe80:") ||
+        lower.startsWith("ff");
+}
+function shouldBlockInternalProbe(visibility) {
+    return visibility === "public" || visibility === "staging_preview";
+}
+function lookupHostname(hostname) {
+    return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
 }
 export function providerPreflight(config) {
     if (config.modelProvider === "anthropic") {
@@ -64,14 +104,38 @@ export async function runPreflight(config, job) {
     }
     if (job) {
         const url = new URL(job.target.scanUrl.startsWith("http") ? job.target.scanUrl : `https://${job.target.scanUrl}`);
-        const dns = await lookup(url.hostname).then((result) => check(true, `Resolved ${url.hostname} to ${result.address}`), (err) => check(false, `Could not resolve ${url.hostname}: ${err instanceof Error ? err.message : String(err)}`, "Check private DNS/VPN/proxy settings on the runner host."));
+        const hostname = lookupHostname(url.hostname);
+        const literalAddress = isIP(hostname) ? hostname : undefined;
+        const resolvedAddresses = literalAddress
+            ? [literalAddress]
+            : await lookup(hostname, { all: true }).then((results) => results.map((result) => result.address), (err) => {
+                checks.dns = check(false, `Could not resolve ${hostname}: ${err instanceof Error ? err.message : String(err)}`, "Check private DNS/VPN/proxy settings on the runner host.");
+                return [];
+            });
+        const dns = resolvedAddresses.length > 0
+            ? check(true, literalAddress ? `Using literal target address ${literalAddress}` : `Resolved ${hostname} to ${resolvedAddresses.join(", ")}`)
+            : checks.dns ?? check(false, `Could not resolve ${hostname}`, "Check private DNS/VPN/proxy settings on the runner host.");
         checks.dns = dns;
-        const reachable = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(8_000) }).then((res) => check(res.status < 500, `HTTP probe returned ${res.status}`, res.status < 500 ? undefined : "Verify the target is reachable and not returning server errors from this runner."), (err) => check(false, `HTTP probe failed: ${err instanceof Error ? err.message : String(err)}`, "Verify the target is reachable from this runner and that proxy/custom CA settings are correct."));
+        const blockedAddresses = shouldBlockInternalProbe(job.target.visibility)
+            ? resolvedAddresses.filter(isBlockedIp)
+            : [];
+        checks.target_scope = check(blockedAddresses.length === 0, blockedAddresses.length === 0
+            ? "Runner-side target scope check passed"
+            : `Refusing ${job.target.visibility} target probe to internal address ${blockedAddresses.join(", ")}`, blockedAddresses.length === 0 ? undefined : "Use private/internal or localhost visibility for runner-local addresses.");
+        const reachable = blockedAddresses.length > 0
+            ? check(false, "HTTP probe skipped because target resolved to an internal address")
+            : await runnerFetch(config, url, { method: "HEAD" }, { timeoutMs: 8_000 }).then((res) => check(res.status < 500, `HTTP probe returned ${res.status}`, res.status < 500 ? undefined : "Verify the target is reachable and not returning server errors from this runner."), (err) => check(false, `HTTP probe failed: ${err instanceof Error ? err.message : String(err)}`, "Verify the target is reachable from this runner and that proxy/custom CA settings are correct."));
         checks.reachability = reachable;
         const digestOk = /^sha256:[a-fA-F0-9]{64}$/.test(job.image.digest);
         checks.image_digest = check(digestOk, digestOk ? "Image digest is pinned" : "Image digest is missing or invalid", digestOk ? undefined : "Runner refuses mutable image tags; configure APVISO_SCAN_IMAGE_DIGEST.");
-        const signatureOk = !!job.image.signature || config.allowUnsignedDevImages || !config.requireImageSignature;
-        checks.image_signature = check(signatureOk, signatureOk ? "Image signature policy satisfied" : "Image signature missing", signatureOk ? undefined : "Publish a signed scan image or set APVISO_ALLOW_UNSIGNED_DEV_IMAGES=true in development only.");
+        const cosign = config.requireImageSignature && !config.allowUnsignedDevImages
+            ? await runCommand("cosign", ["version"], { timeoutMs: 8_000, maxBufferBytes: 64 * 1024 })
+                .catch((err) => ({ code: 1, stdout: "", stderr: err instanceof Error ? err.message : String(err) }))
+            : { code: 0, stdout: "", stderr: "" };
+        const signatureOk = (!!job.image.signature && cosign.code === 0) || config.allowUnsignedDevImages || !config.requireImageSignature;
+        checks.image_signature = check(signatureOk, signatureOk ? "Image signature policy satisfied" : !job.image.signature ? "Image signature missing" : "Cosign is unavailable", signatureOk ? undefined : !job.image.signature
+            ? "Publish a signed scan image or set APVISO_ALLOW_UNSIGNED_DEV_IMAGES=true in development only."
+            : "Install cosign and configure APVISO_COSIGN_* trust settings if you use a custom signer.");
     }
     const ok = Object.values(checks).every((entry) => entry.ok);
     return {
