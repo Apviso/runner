@@ -9,6 +9,7 @@ import { configPath, loadConfig, RUNNER_VERSION } from "./config.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { redact } from "./log.js";
 import { createTarget, embeddingCredentialNames, listPlatformTargets, providerCredentialNames, safeRunnerConfig, savePlatformTargetAuth, saveRunnerConfig, setupOptions, onboardRunner, } from "./setup.js";
+import { checkRunnerUpdate, updateRunner } from "./update.js";
 import * as ui from "./ui.js";
 const MIME_TYPES = {
     ".css": "text/css; charset=utf-8",
@@ -213,6 +214,26 @@ export async function startConsoleServer(options = {}) {
     const daemon = options.daemonManager || new DaemonManager(events);
     const webRoot = resolveWebRoot(options.webRoot);
     let lastDoctor = null;
+    let updateStatus = initialUpdateStatus();
+    let updateCheckPromise = null;
+    let updateInstallPromise = null;
+    const refreshUpdateStatus = (force = false) => {
+        if (!force && updateStatus.latestVersion && Date.now() - Date.parse(updateStatus.checkedAt) < 60 * 60 * 1000) {
+            return Promise.resolve(updateStatus);
+        }
+        if (updateCheckPromise)
+            return updateCheckPromise;
+        updateCheckPromise = checkRunnerUpdate()
+            .then((status) => {
+            updateStatus = status;
+            events.emit("update", status);
+            return status;
+        })
+            .finally(() => {
+            updateCheckPromise = null;
+        });
+        return updateCheckPromise;
+    };
     const server = createServer(async (req, res) => {
         try {
             const requestUrl = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
@@ -233,11 +254,31 @@ export async function startConsoleServer(options = {}) {
             }
             if (req.method === "GET" && requestUrl.pathname === "/api/events") {
                 events.connect(req, res);
-                events.emit("state", buildState(daemon, lastDoctor));
+                events.emit("state", buildState(daemon, lastDoctor, updateStatus));
                 return;
             }
             if (req.method === "GET" && requestUrl.pathname === "/api/state") {
-                sendJson(res, 200, buildState(daemon, lastDoctor));
+                sendJson(res, 200, buildState(daemon, lastDoctor, updateStatus));
+                return;
+            }
+            if (req.method === "GET" && requestUrl.pathname === "/api/update") {
+                sendJson(res, 200, { update: await refreshUpdateStatus(requestUrl.searchParams.get("force") === "1") });
+                return;
+            }
+            if (req.method === "POST" && requestUrl.pathname === "/api/update") {
+                if (!updateInstallPromise) {
+                    const status = updateStatus.updateAvailable ? updateStatus : undefined;
+                    updateInstallPromise = updateRunner({ status })
+                        .then((result) => {
+                        updateStatus = result;
+                        events.emit("update", result);
+                        return result;
+                    })
+                        .finally(() => {
+                        updateInstallPromise = null;
+                    });
+                }
+                sendJson(res, 200, { update: await updateInstallPromise });
                 return;
             }
             if (req.method === "POST" && requestUrl.pathname === "/api/onboard") {
@@ -366,10 +407,11 @@ export async function startConsoleCommand(options) {
     ui.endScreen("Web console stopped.");
     return 0;
 }
-function buildState(daemon, doctor) {
+function buildState(daemon, doctor, update) {
     const config = loadConfig();
     return {
         version: RUNNER_VERSION,
+        update,
         configPath: configPath(),
         config: safeRunnerConfig(config),
         daemon: daemon.state(),
@@ -380,6 +422,14 @@ function buildState(daemon, doctor) {
             providerCredentials: Object.fromEntries(setupOptions.modelProviders.map((provider) => [provider, providerCredentialNames(provider)])),
             embeddingCredentials: Object.fromEntries(setupOptions.embeddingProviders.map((provider) => [provider, embeddingCredentialNames(provider)])),
         },
+    };
+}
+function initialUpdateStatus() {
+    return {
+        packageName: process.env.APVISO_RUNNER_PACKAGE || "@apviso/runner",
+        currentVersion: RUNNER_VERSION,
+        updateAvailable: false,
+        checkedAt: new Date(0).toISOString(),
     };
 }
 function isAuthorized(req, requestUrl, token) {

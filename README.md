@@ -27,6 +27,7 @@ You can also install with npm directly:
 ```bash
 npm install -g @apviso/runner
 apviso version
+apviso update
 ```
 
 The installed binary is `apviso`; `apviso-runner` is also available as a
@@ -91,7 +92,8 @@ The local console binds to `127.0.0.1` by default and opens a per-session
 bootstrap token URL. The token is exchanged for a same-origin `HttpOnly` cookie
 and removed from the browser URL. It can onboard the runner, run doctor checks,
 manage a daemon process it launches, create targets, save runner-local target
-auth, and show redacted logs.
+auth, show redacted logs, and offer an Update button when npm has a newer
+runner release.
 
 ## Run
 
@@ -102,6 +104,12 @@ apviso run
 
 `APVISO_API_KEY=apvk_...` is used only for onboarding and user-API actions.
 The daemon should run with `APVISO_RUNNER_TOKEN=apvr_...`.
+
+Update the globally installed npm package with:
+
+```bash
+apviso update
+```
 
 ## Docker
 

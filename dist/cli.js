@@ -10,6 +10,7 @@ import { createPrompter, isPromptCancelled, promptChoice, promptNumber, promptRe
 import { defaultTargetAuthPath, expandHome, upsertTargetAuthConfig, } from "./target-auth.js";
 import { addTargetAuth, AUTH_TYPES, createTarget, EMBEDDING_PROVIDERS, mergeProviderEnv, onboardRunner, registerRunner, tokenNamespace, VISIBILITIES, } from "./setup.js";
 import { startConsoleCommand } from "./console.js";
+import { checkRunnerUpdate, updateRunner } from "./update.js";
 import * as ui from "./ui.js";
 function parseCookieHeader(header) {
     return header
@@ -80,6 +81,7 @@ Commands:
                             Register with an enrollment token or store a rotated runner token
   unregister                Show cleanup guidance for this runner
   logs                      Show where job container logs are written
+  update                    Update the globally installed runner package
   version                   Print the runner version
 
 Environment:
@@ -514,8 +516,28 @@ async function commandLogs() {
     ui.info(`Workspace logs live under ${config.workspaceDir}/<job-id>/container.log`);
     return 0;
 }
+async function commandUpdate() {
+    const status = await ui.withSpinner("Checking for runner updates", () => checkRunnerUpdate(), (checked) => checked.error
+        ? "Update check failed"
+        : checked.updateAvailable
+            ? `APVISO Runner v${checked.latestVersion} is available`
+            : "APVISO Runner is up to date");
+    if (status.error)
+        throw new Error(`Could not check for runner updates: ${status.error}`);
+    if (!status.updateAvailable) {
+        ui.success(`APVISO Runner v${status.currentVersion} is already up to date.`);
+        return 0;
+    }
+    const result = await ui.withSpinner(`Installing APVISO Runner v${status.latestVersion}`, () => updateRunner({ status }), () => `Installed APVISO Runner v${status.latestVersion}`);
+    ui.success(result.message);
+    return 0;
+}
 export async function runCli(argv = process.argv.slice(2)) {
     const parsed = parseCliArgs(argv);
+    if (wantsHelp(parsed)) {
+        console.log(usage());
+        return 0;
+    }
     if (parsed.command === "onboard")
         return commandOnboard(parsed);
     if (parsed.command === "register")
@@ -542,12 +564,21 @@ export async function runCli(argv = process.argv.slice(2)) {
         return commandUnregister();
     if (parsed.command === "logs")
         return commandLogs();
+    if (parsed.command === "update")
+        return commandUpdate();
     if (parsed.command === "version") {
         console.log(RUNNER_VERSION);
         return 0;
     }
     console.log(usage());
-    return parsed.command === "help" || parsed.command === "--help" || parsed.command === "-h" ? 0 : 1;
+    return 1;
+}
+function wantsHelp(parsed) {
+    return parsed.command === "help" ||
+        parsed.command === "--help" ||
+        parsed.command === "-h" ||
+        flagBool(parsed.flags, "help") ||
+        parsed.positionals.includes("-h");
 }
 function isMainModule() {
     const entrypoint = process.argv[1];
